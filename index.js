@@ -1,18 +1,17 @@
 require("dotenv").config({ path: `${__dirname}/.env` });
 const egsv_api = require("./apis/egsv");
 const zabbix_api = require("./apis/zabbix");
-const schedule = require('node-schedule');
 const axios = require("axios");
 const fs = require("fs");
 
 const egsv_sko = new egsv_api({
-  host: process.env.EGSV_HOST3,
-  port: process.env.EGSV_PORT3,
-  user: process.env.EGSV_USER3,
-  pass: process.env.EGSV_PASS3
+  host: process.env.EGSV_HOST,
+  port: process.env.EGSV_PORT,
+  user: process.env.EGSV_USER,
+  pass: process.env.EGSV_PASS
 });
 
-const zabbix_sko = new zabbix_api({ host: "172.20.21.200", token: process.env.ZABBIX_SKO_API_TOKEN });
+const zabbix_sko = new zabbix_api({ host: process.env.ZABBIX_HOST, token: process.env.ZABBIX_API_TOKEN });
 
 const make_good_num = num => num < 10 ? "0"+num : ""+num;
 
@@ -43,13 +42,15 @@ const strcmp = (a,b) => (a < b ? -1 : +(a > b));
 const parse_unix_date = (timestamp) => new Date(timestamp * 1000);
 
 const minimum_events_within_hour = 1;
-const cur_dir = __dirname;
-const telegram_bot_id = load_file_content(`${cur_dir}/telegram_bot_id`);
-const telegram_chat_id = load_file_content(`${cur_dir}/telegram_chat_id`);
+const telegram_bot_id = process.env.TELEGRAM_BOT_API_TOKEN;
+const telegram_chat_id = process.env.TELEGRAM_BOT_CHAT;
+const hour = 60 * 60 * 1000;
+const day = 24 * hour;
 
 async function broadcast_message() {
   const current_date = new Date();
-  const last_5h = (new Date()).setTime(current_date.getTime() - 5*60*60*1000);
+  const last_5h  = (new Date()).setTime(current_date.getTime() - hour * 5);
+  const last_30d = (new Date()).setTime(current_date.getTime() - day * 30);
 
   const ret = await egsv_sko.method("rtms.report.list", {
     filter: {
@@ -58,7 +59,7 @@ async function broadcast_message() {
         $lte: make_sane_time_string(current_date)
       }
     },
-    group: { hour: true },
+    //group: { hour: true },
     include: [ 'cameras', 'last_datetimes' ]
   });
 
@@ -106,29 +107,44 @@ async function broadcast_message() {
     zabbix_problem_arr.sort((a, b) => strcmp(a.host_short, b.host_short));
   }
 
-  let arr = [];
+  // тут теперь имеет смысл пройтись по каждой камере и вернуть последнее событие для камеры
+  let promises_arr = [];
   for (const [ key, stats ] of Object.entries(ret.stats)) {
-  	if (zabbix_egsv_cam_id[key]) continue;
-  	
-    let problem_start = undefined;
+    if (zabbix_egsv_cam_id[key]) continue;
+    const camera = obj[key];
+    const p = egsv_sko.method("rtms.number.list", {
+      filter: {
+        datetime: {
+          $gte: make_sane_time_string(last_30d),
+          $lte: make_sane_time_string(current_date)
+        },
+        camera: { $in: [ camera.id ] }
+      },
+      limit: 1,
+      sort: { datetime: 'desc' }
+      //include: [ 'cameras', 'last_datetimes' ]
+    });
 
-    if (stats.length > 0) {
-      const data = stats[stats.length-1];
-      const date = new Date(data.datetime);
-      const cur_str = make_sane_date_string(current_date);
-      const date_str = make_sane_date_string(date);
-      if (cur_str !== date_str || current_date.getHours() !== date.getHours()) {
-        problem_start = new Date(data.datetime);
-      }
-    } else {
-      problem_start = last_5h;
+    promises_arr.push(p);
+  }
+
+  const events_arr = (await Promise.all(promises_arr)).map(el => el.numbers ? el.numbers[0] : undefined);
+
+  let arr = [];
+  for (const event of events_arr) {
+    const camera = obj[event.camera];
+    if (!event) {
+      arr.push({ problem_start: last_30d, camera });
+      continue;
     }
-//    if (stats.length < 4) {
-//      problem_start = stats.length !== 0 ? stats[stats.length-1].datetime : last_5h;
-//    }
 
-    if (problem_start) {
-      arr.push({ problem_start, camera: obj[key] });
+    const event_date = new Date(event.datetime);
+    const diff = Math.abs(current_date - event_date);
+    // если больше чем 4 часа
+    if (diff > 4 * hour) { 
+      arr.push({ problem_start: event_date, camera }); 
+      //console.log(event);
+      //break;
     }
   }
 
@@ -145,9 +161,8 @@ async function broadcast_message() {
 
   let egsv_str = "";
   for (const elem of arr) {
-    const problem_date = new Date(elem.problem_start);
-    const start_hours = problem_date.getHours();
-    const local_str = `${counter}) ${elem.camera.name} не работает с ${start_hours} часов\n`;
+    const date = make_sane_time_string(elem.problem_start);
+    const local_str = `${counter}) ${elem.camera.name} последнее событие ${date}\n`;
     counter += 1;
     egsv_str += local_str;
   }
@@ -155,7 +170,7 @@ async function broadcast_message() {
   let final_str = `\nZabbix:\n${zabbix_str}\nEGSV:\n${egsv_str}`;
   if (zabbix_problem_arr.length === 0 && arr.length === 0) final_str = "\nПроблем нет";
 
-  const msg = `chat_id=${telegram_chat_id}&text=\nСКО Отчет ${make_sane_date_string(current_date)}\n${final_str.trim()}`;
+  const msg = `chat_id=${telegram_chat_id}&text=\n${process.env.REPORT_OPENING} ${make_sane_date_string(current_date)}\n${final_str.trim()}`;
   const t_ret = await axios.post(`https://api.telegram.org/bot${telegram_bot_id}/sendMessage`, msg);
 }
 
