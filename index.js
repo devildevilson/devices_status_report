@@ -128,14 +128,14 @@ async function broadcast_message() {
       //include: [ 'cameras', 'last_datetimes' ]
     });
 
-    promises_arr.push(p);
+    promises_arr.push([ camera.id, p ]);
   }
 
-  const events_arr = (await Promise.all(promises_arr)).map(el => el.numbers ? el.numbers[0] : undefined);
+  const events_arr = (await Promise.all(promises_arr.map(el => el[1]))).map((el, index) => [ promises_arr[index][0], el.numbers ? el.numbers[0] : undefined ]);
 
   let arr = [];
-  for (const event of events_arr) {
-    const camera = obj[event.camera];
+  for (const [ camera_id, event ] of events_arr) {
+    const camera = obj[camera_id];
     if (!event) {
       arr.push({ problem_start: last_30d, camera });
       continue;
@@ -146,8 +146,6 @@ async function broadcast_message() {
     // если больше чем 4 часа
     if (diff > 4 * hour) { 
       arr.push({ problem_start: event_date, camera }); 
-      //console.log(event);
-      //break;
     }
   }
 
