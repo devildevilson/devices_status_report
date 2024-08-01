@@ -150,6 +150,8 @@ async function broadcast_message() {
 
   arr.sort((a,b) => strcmp(a.camera.name, b.camera.name));
 
+  let counter = 1;
+
   let zabbix_str = "";
   for (const elem of zabbix_problem_arr) {
     const date = make_sane_time_string(parse_unix_date(elem.problem_since));
