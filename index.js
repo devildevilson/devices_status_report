@@ -66,13 +66,13 @@ async function broadcast_message() {
   const obj = {};
   ret.cameras.forEach((elem) => { obj[elem.id] = elem; });
 
+  const zabbix_groupids = (process.env.ZABBIX_GROUPIDS).split(",").map(el => Number(el.trim()));
   let zabbix_egsv_cam_id = {};
   let zabbix_problem_arr = [];
-  let non_rtms_objs = [];
 
   {
     const problems = await zabbix_sko.method("problem.get", { 
-      groupids: [ 28, 31, 42, 23 ],
+      groupids: zabbix_groupids,
       severities: [ 4 ]
     });
 
@@ -107,7 +107,6 @@ async function broadcast_message() {
     );
     zabbix_problem_arr.forEach(el => zabbix_egsv_cam_id[el.cam_id] = true);
     zabbix_problem_arr.sort((a, b) => strcmp(a.host_short, b.host_short));
-    non_rtms_objs = zabbix_problem_arr.filter(el => !el.egsv_name);
   }
 
   // тут теперь имеет смысл пройтись по каждой камере и вернуть последнее событие для камеры
@@ -150,17 +149,6 @@ async function broadcast_message() {
   }
 
   arr.sort((a,b) => strcmp(a.camera.name, b.camera.name));
-  non_rtms_objs.sort((a,b) => strcmp(a.host_name, b.host_name));
-
-  let zabbix_other = "";
-  let counter = 1;
-  for (const elem of non_rtms_objs) {
-    const date = make_sane_time_string(parse_unix_date(elem.problem_since));
-    const local_str = `${counter}) ${elem.host_name} не работает с ${date}\n`;
-    counter += 1;
-    zabbix_other += local_str;
-  }
-  if (non_rtms_objs.length > 0) zabbix_other = "\nКупола:\n" + zabbix_other;
 
   let zabbix_str = "";
   for (const elem of zabbix_problem_arr) {
@@ -180,8 +168,8 @@ async function broadcast_message() {
   }
   if (arr.length > 0) egsv_str = "\nEGSV:\n" + egsv_str;
 
-  let final_str = `${zabbix_other}${zabbix_str}${egsv_str}`;
-  if (non_rtms_objs.length === 0 && zabbix_problem_arr.length === 0 && arr.length === 0) final_str = "\nПроблем нет";
+  let final_str = `${zabbix_str}${egsv_str}`;
+  if (zabbix_problem_arr.length === 0 && arr.length === 0) final_str = "\nПроблем нет";
 
   const msg = `chat_id=${telegram_chat_id}&text=\n${process.env.REPORT_OPENING} ${make_sane_date_string(current_date)}\n${final_str.trim()}`;
   const t_ret = await axios.post(`https://api.telegram.org/bot${telegram_bot_id}/sendMessage`, msg);
