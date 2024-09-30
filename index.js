@@ -113,7 +113,7 @@ async function broadcast_message() {
     });
 
     //zabbix_problem_arr = macros.filter(el => el.macro === "{$EGSVCAMERAID}").map(
-    zabbix_problem_arr = hosts.map(
+    zabbix_problem_arr = hosts.filter(el => +(el.status) === 0).map(
       el => { 
         return { 
           cam_id: camera_address_to_id[el.interfaces[0].ip], 
