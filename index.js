@@ -41,6 +41,11 @@ function load_file_content(path) {
 const strcmp = (a,b) => (a < b ? -1 : +(a > b));
 const parse_unix_date = (timestamp) => new Date(timestamp * 1000);
 
+function get_address_from_rtsp(url) {
+  const u = new URL(url);
+  return u.hostname;
+}
+
 const minimum_events_within_hour = 1;
 const telegram_bot_id = process.env.TELEGRAM_BOT_API_TOKEN;
 const telegram_chat_id = process.env.TELEGRAM_BOT_CHAT;
@@ -64,7 +69,16 @@ async function broadcast_message() {
   });
 
   const obj = {};
+  // может быть две камеры на одном адресе
   ret.cameras.forEach((elem) => { obj[elem.id] = elem; });
+  let camera_address_to_id = {};
+  let camera_id_to_address = {};
+  ret.cameras.forEach((elem) => { 
+    const address = get_address_from_rtsp(elem.url);
+    if (!camera_address_to_id[address]) camera_address_to_id[address] = [];
+    camera_address_to_id[address].push(elem.id);
+  });
+  ret.cameras.forEach((elem) => { camera_id_to_address[elem.id] = get_address_from_rtsp(elem.url); });
 
   const zabbix_groupids = (process.env.ZABBIX_GROUPIDS).split(",").map(el => Number(el.trim()));
   let zabbix_egsv_cam_id = {};
@@ -87,25 +101,35 @@ async function broadcast_message() {
     events.forEach(el => el.hosts.forEach(h => host_problem_time[h.hostid] = el.clock));
     const host_ids_arr = events.map(el => el.hosts.map(el1 => el1.hostid));
     const host_ids = [].concat.apply([], host_ids_arr);
-    const macros = await zabbix_sko.method("usermacro.get", {
-      selectHosts: "extend",
-      selectHostGroups: "extend",
+    // const macros = await zabbix_sko.method("usermacro.get", {
+    //   selectHosts: "extend",
+    //   selectHostGroups: "extend",
+    //   hostids: host_ids,
+    // });
+
+    const hosts = await zabbix_sko.method("host.get", {
+      selectInterfaces: "extend",
       hostids: host_ids,
     });
 
-    zabbix_problem_arr = macros.filter(el => el.macro === "{$EGSVCAMERAID}").map(
+    //zabbix_problem_arr = macros.filter(el => el.macro === "{$EGSVCAMERAID}").map(
+    zabbix_problem_arr = hosts.map(
       el => { 
         return { 
-          cam_id: el.value, 
+          cam_id: camera_address_to_id[el.interfaces[0].ip], 
+          host_address: el.interfaces[0].ip,
           host_id: el.hostid, 
-          host_name: el.hosts[0].name, 
-          host_short: el.hosts[0].host,
-          egsv_name: obj[el.value] ? obj[el.value].name : undefined,
+          //host_name: el.hosts[0].name, 
+          //host_short: el.hosts[0].host,
+          host_name: el.name, 
+          host_short: el.host,
+          //egsv_name: obj[el.value] ? obj[el.value].name : undefined,
+          egsv_name: obj[el.interfaces[0].ip] ? obj[el.interfaces[0].ip].name : undefined,
           problem_since: host_problem_time[el.hostid],
         } 
       }
     );
-    zabbix_problem_arr.forEach(el => zabbix_egsv_cam_id[el.cam_id] = true);
+    zabbix_problem_arr.forEach(el => el.cam_id?.forEach(id => zabbix_egsv_cam_id[id] = el.host_address));
     zabbix_problem_arr.sort((a, b) => strcmp(a.host_short, b.host_short));
   }
 
@@ -113,6 +137,7 @@ async function broadcast_message() {
   let promises_arr = [];
   for (const [ key, stats ] of Object.entries(ret.stats)) {
     if (zabbix_egsv_cam_id[key]) continue;
+    //const address = zabbix_egsv_cam_id[key];
     const camera = obj[key];
     const p = egsv_sko.method("rtms.number.list", {
       filter: {
@@ -120,14 +145,14 @@ async function broadcast_message() {
           $gte: make_sane_time_string(last_30d),
           $lte: make_sane_time_string(current_date)
         },
-        camera: { $in: [ camera.id ] }
+        camera: { $in: [ key ] }
       },
       limit: 1,
       sort: { datetime: 'desc' }
       //include: [ 'cameras', 'last_datetimes' ]
     });
 
-    promises_arr.push([ camera.id, p ]);
+    promises_arr.push([ key, p ]);
   }
 
   const events_arr = (await Promise.all(promises_arr.map(el => el[1]))).map((el, index) => [ promises_arr[index][0], el.numbers ? el.numbers[0] : undefined ]);
