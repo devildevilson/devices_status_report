@@ -69,7 +69,7 @@ async function broadcast_message() {
   const id_arr = ret2.cameras.map(el => el.id);
   const bulk_arr = id_arr.map(el => { return { method: "rtms.number.list", params: {
     filter: { 
-      datetime: { $gte: make_sane_time_string(last_5h), $lte: make_sane_time_string(current_date) }, 
+      datetime: { $gte: make_sane_time_string(last_30d), $lte: make_sane_time_string(current_date) }, 
       camera: { $in: [ el ] }
     },
     group: { hour: false },
