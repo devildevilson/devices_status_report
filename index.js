@@ -53,32 +53,42 @@ const hour = 60 * 60 * 1000;
 const day = 24 * hour;
 
 async function broadcast_message() {
+  const egsv_taxes_arr = (process.env.EGSV_TAXONOMIES).split(",").map(el => Number(el.trim()));
   const current_date = new Date();
   const last_5h  = (new Date()).setTime(current_date.getTime() - hour * 5);
   const last_30d = (new Date()).setTime(current_date.getTime() - day * 30);
-
-  const ret = await egsv_sko.method("rtms.report.list", {
+  const ret2 = await egsv_sko.method("camera.list", {
     filter: {
-      datetime: {
-        $gte: make_sane_time_string(last_5h),
-        $lte: make_sane_time_string(current_date)
+      _taxonomies: {
+        $in: egsv_taxes_arr
       }
     },
-    //group: { hour: true },
-    include: [ 'cameras', 'last_datetimes' ]
+    limit: 200
   });
+
+  const id_arr = ret2.cameras.map(el => el.id);
+  const bulk_arr = id_arr.map(el => { return { method: "rtms.number.list", params: {
+    filter: { 
+      datetime: { $gte: make_sane_time_string(last_5h), $lte: make_sane_time_string(current_date) }, 
+      camera: { $in: [ el ] }
+    },
+    group: { hour: false },
+    sort: { datetime: 'desc' },
+    limit: 1
+  } } });
+  const ret_bulk = await egsv_sko.method("bulk.parallel", { bulk: bulk_arr, limit: 5 });
 
   const obj = {};
   // может быть две камеры на одном адресе
-  ret.cameras.forEach((elem) => { obj[elem.id] = elem; });
+  ret2.cameras.forEach((elem) => { obj[elem.id] = elem; });
   let camera_address_to_id = {};
   let camera_id_to_address = {};
-  ret.cameras.forEach((elem) => { 
+  ret2.cameras.forEach((elem) => { 
     const address = get_address_from_rtsp(elem.url);
     if (!camera_address_to_id[address]) camera_address_to_id[address] = [];
     camera_address_to_id[address].push(elem.id);
   });
-  ret.cameras.forEach((elem) => { camera_id_to_address[elem.id] = get_address_from_rtsp(elem.url); });
+  ret2.cameras.forEach((elem) => { camera_id_to_address[elem.id] = get_address_from_rtsp(elem.url); });
 
   const zabbix_groupids = (process.env.ZABBIX_GROUPIDS).split(",").map(el => Number(el.trim()));
   let zabbix_egsv_cam_id = {};
@@ -101,11 +111,6 @@ async function broadcast_message() {
     events.forEach(el => el.hosts.forEach(h => host_problem_time[h.hostid] = el.clock));
     const host_ids_arr = events.map(el => el.hosts.map(el1 => el1.hostid));
     const host_ids = [].concat.apply([], host_ids_arr);
-    // const macros = await zabbix_sko.method("usermacro.get", {
-    //   selectHosts: "extend",
-    //   selectHostGroups: "extend",
-    //   hostids: host_ids,
-    // });
 
     const hosts = await zabbix_sko.method("host.get", {
       selectInterfaces: "extend",
@@ -133,39 +138,21 @@ async function broadcast_message() {
     zabbix_problem_arr.sort((a, b) => strcmp(a.host_short, b.host_short));
   }
 
-  // тут теперь имеет смысл пройтись по каждой камере и вернуть последнее событие для камеры
-  let promises_arr = [];
-  for (const [ key, stats ] of Object.entries(ret.stats)) {
-    if (zabbix_egsv_cam_id[key]) continue;
-    //const address = zabbix_egsv_cam_id[key];
-    const camera = obj[key];
-    const p = egsv_sko.method("rtms.number.list", {
-      filter: {
-        datetime: {
-          $gte: make_sane_time_string(last_30d),
-          $lte: make_sane_time_string(current_date)
-        },
-        camera: { $in: [ key ] }
-      },
-      limit: 1,
-      sort: { datetime: 'desc' }
-      //include: [ 'cameras', 'last_datetimes' ]
-    });
-
-    promises_arr.push([ key, p ]);
-  }
-
-  const events_arr = (await Promise.all(promises_arr.map(el => el[1]))).map((el, index) => [ promises_arr[index][0], el.numbers ? el.numbers[0] : undefined ]);
-
   let arr = [];
-  for (const [ camera_id, event ] of events_arr) {
-    const camera = obj[camera_id];
-    if (!event) {
+  for (const res of ret_bulk.results) {
+    const camera = obj[res.params.filter.camera['$in'][0]];
+    if (!camera) {
+      console.log(res.params.filter);
+      throw 'asfaffsfafasfafsa';
+    }
+
+    if (res.data.numbers.length === 0) {
       arr.push({ problem_start: last_30d, camera });
       continue;
     }
 
-    const event_date = new Date(event.datetime);
+    //console.log(res.data);
+    const event_date = new Date(res.data.numbers[0].datetime);
     const diff = Math.abs(current_date - event_date);
     // если больше чем 4 часа
     if (diff > 4 * hour) { 
