@@ -53,7 +53,7 @@ const hour = 60 * 60 * 1000;
 const day = 24 * hour;
 
 async function broadcast_message() {
-  const egsv_taxes_arr = (process.env.EGSV_TAXONOMIES).split(",").map(el => Number(el.trim()));
+  const egsv_taxes_arr = (process.env.EGSV_TAXONOMIES).split(",");
   const current_date = new Date();
   const last_5h  = (new Date()).setTime(current_date.getTime() - hour * 5);
   const last_30d = (new Date()).setTime(current_date.getTime() - day * 30);
@@ -63,10 +63,28 @@ async function broadcast_message() {
         $in: egsv_taxes_arr
       }
     },
-    limit: 200
+    limit: 100000
   });
 
-  const id_arr = ret2.cameras.map(el => el.id);
+  const rtms_cameras = ret2.cameras.filter(el => el.api_connection && el.api_connection.rtms && el.api_connection.rtms.enable);
+  let res_arr = [];
+  // for (const tax of egsv_taxes_arr) {
+  //   const id_arr = rtms_cameras.filter(el => el.taxonomies.includes(tax)).map(el => el.id);
+  //   if (id_arr.length === 0) continue;
+
+  //   const bulk_arr = id_arr.map(el => { return { method: "rtms.number.list", params: {
+  //     filter: { 
+  //       datetime: { $gte: make_sane_time_string(last_30d), $lte: make_sane_time_string(current_date) }, 
+  //       camera: { $in: [ el ] }
+  //     },
+  //     group: { hour: false },
+  //     sort: { datetime: 'desc' },
+  //     limit: 1
+  //   } } });
+  //   const ret_bulk = await egsv_sko.method("bulk.parallel", { bulk: bulk_arr, limit: 5 });
+  //   res_arr = res_arr.concat(ret_bulk.results);
+  // }
+  const id_arr = rtms_cameras.map(el => el.id);
   const bulk_arr = id_arr.map(el => { return { method: "rtms.number.list", params: {
     filter: { 
       datetime: { $gte: make_sane_time_string(last_30d), $lte: make_sane_time_string(current_date) }, 
@@ -77,6 +95,7 @@ async function broadcast_message() {
     limit: 1
   } } });
   const ret_bulk = await egsv_sko.method("bulk.parallel", { bulk: bulk_arr, limit: 5 });
+  res_arr = ret_bulk.results;
 
   const obj = {};
   // может быть две камеры на одном адресе
@@ -139,7 +158,7 @@ async function broadcast_message() {
   }
 
   let arr = [];
-  for (const res of ret_bulk.results) {
+  for (const res of res_arr) {
     const camera = obj[res.params.filter.camera['$in'][0]];
     if (!camera) {
       console.log(res.params.filter);
@@ -186,7 +205,8 @@ async function broadcast_message() {
   if (zabbix_problem_arr.length === 0 && arr.length === 0) final_str = "\nПроблем нет";
 
   const msg = `chat_id=${telegram_chat_id}&text=\n${process.env.REPORT_OPENING} ${make_sane_date_string(current_date)}\n${final_str.trim()}`;
-  const t_ret = await axios.post(`https://api.telegram.org/bot${telegram_bot_id}/sendMessage`, msg);
+  console.log(msg);
+  //const t_ret = await axios.post(`https://api.telegram.org/bot${telegram_bot_id}/sendMessage`, msg);
 }
 
 // теперь используем cron для запуска скрипта
